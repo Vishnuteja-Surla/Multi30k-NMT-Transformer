@@ -17,12 +17,14 @@ AUTOGRADER CONTRACT (DO NOT MODIFY SIGNATURES):
 import math
 import copy
 import os
+import json
 import gdown
 from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import spacy
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -55,7 +57,14 @@ def scaled_dot_product_attention(
         output : Attended output,   shape (..., seq_q, d_v)
         attn_w : Attention weights, shape (..., seq_q, seq_k)
     """
-    raise NotImplementedError
+    d_k = Q.size(-1)
+    scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d_k)
+    if mask is not None:
+        scores = scores.masked_fill(mask, float('-inf'))
+    attn_w = F.softmax(scores, dim=-1)
+    attn_w = torch.nan_to_num(attn_w, nan=0.0)  # replace NaNs resulting from all -inf with zeros
+    output = torch.matmul(attn_w, V)
+    return output, attn_w
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -80,8 +89,10 @@ def make_src_mask(
         True  → position is a PAD token (will be masked out)
         False → real token
     """
-    raise NotImplementedError
-
+    # Create boolean mask where src == pad_idx and reshape to [batch, 1, 1, src_len] for broadcasting in attention
+    mask = (src == pad_idx)
+    mask = mask.unsqueeze(1).unsqueeze(2)
+    return mask
 
 def make_tgt_mask(
     tgt: torch.Tensor,
@@ -98,7 +109,20 @@ def make_tgt_mask(
         Boolean mask, shape [batch, 1, tgt_len, tgt_len]
         True → position is masked out (PAD or future token)
     """
-    raise NotImplementedError
+    batch, tgt_len = tgt.size()
+
+    # 1. Create padding mask for target sequence
+    pad_mask = (tgt == pad_idx)
+    pad_mask = pad_mask.unsqueeze(1).unsqueeze(2)
+
+    # 2. Create triangular causal mask
+    causal_mask = torch.triu(torch.ones(tgt_len, tgt_len, device=tgt.device), diagonal=1).bool()
+    causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
+
+    # 3. Combine them using logical OR
+    combined_mask = pad_mask | causal_mask
+    
+    return combined_mask
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -127,7 +151,13 @@ class MultiHeadAttention(nn.Module):
         self.d_model   = d_model
         self.num_heads = num_heads
         self.d_k       = d_model // num_heads   # depth per head
-        raise NotImplementedError
+
+        self.W_q = nn.Linear(d_model, d_model)
+        self.W_k = nn.Linear(d_model, d_model)
+        self.W_v = nn.Linear(d_model, d_model)
+        self.W_o = nn.Linear(d_model, d_model)
+
+        self.dropout = nn.Dropout(p=dropout)
     
     def forward(
         self,
@@ -149,7 +179,37 @@ class MultiHeadAttention(nn.Module):
             output : shape [batch, seq_q, d_model]
 
         """
-        raise NotImplementedError
+        batch_size = query.size(0)
+
+        # 1. Linear projections and split into heads        
+        # Reshape: [batch, seq_len, d_model] → [batch, seq_len, num_heads, d_k] → [batch, num_heads, seq_len, d_k]
+        Q = self.W_q(query)
+        K = self.W_k(key)
+        V = self.W_v(value)
+
+        Q = Q.view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)  
+        K = K.view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        V = V.view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+
+        # 2. Scaled dot-product attention
+        attn_mask = mask
+        if mask is not None:
+            if mask.dim() == 3:
+                attn_mask = mask.unsqueeze(1)  # [batch, 1, seq_q, seq_k]
+            elif mask.dim() == 4:
+                attn_mask = mask  # already in [batch, num_heads, seq_q, seq_k]
+
+        attn_output, attn_weights = scaled_dot_product_attention(Q, K, V, attn_mask)
+        self.attn_weights = attn_weights.detach()
+
+        # 3. Concatenate heads and final linear
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+
+        # 4. Final linear projection
+        attn_output = self.dropout(attn_output)     # Optional Dropout on attention output
+        output = self.W_o(attn_output)
+
+        return output
 
 
 # ══════════════════════════════════════════════════════════════════════

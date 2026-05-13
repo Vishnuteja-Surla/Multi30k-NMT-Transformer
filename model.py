@@ -312,8 +312,16 @@ class EncoderLayer(nn.Module):
 
     def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1) -> None:
         super().__init__()
-        # TODO:instantiate:
-        raise NotImplementedError
+        
+        # 1. Self-Attention Sublayer
+        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.dropout1 = nn.Dropout(p=dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+
+        # 2. Feed-Forward Sublayer
+        self.ffn = PositionwiseFeedForward(d_model, d_ff, dropout)
+        self.dropout2 = nn.Dropout(p=dropout)
+        self.norm2 = nn.LayerNorm(d_model)
 
     def forward(self, x: torch.Tensor, src_mask: torch.Tensor) -> torch.Tensor:
         """
@@ -325,7 +333,15 @@ class EncoderLayer(nn.Module):
             shape [batch, src_len, d_model]
 
         """
-        raise NotImplementedError
+        # 1. Self-Attention Sublayer
+        attn_output = self.self_attn(query=x, key=x, value=x, mask=src_mask)
+        x = self.norm1(x + self.dropout1(attn_output))  # Add & Norm
+
+        # 2. Feed-Forward Sublayer
+        ffn_output = self.ffn(x)
+        x = self.norm2(x + self.dropout2(ffn_output))  # Add & Norm
+
+        return x
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -348,8 +364,21 @@ class DecoderLayer(nn.Module):
 
     def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1) -> None:
         super().__init__()
-        # TODO: instantiate:
-        raise NotImplementedError
+        
+        # 1. Masked Self-Attention Sublayer
+        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.dropout1 = nn.Dropout(p=dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+
+        # 2. Cross-Attention Sublayer
+        self.cross_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.dropout2 = nn.Dropout(p=dropout)
+        self.norm2 = nn.LayerNorm(d_model)
+
+        # 3. Feed-Forward Sublayer
+        self.ffn = PositionwiseFeedForward(d_model, d_ff, dropout)
+        self.dropout3 = nn.Dropout(p=dropout)
+        self.norm3 = nn.LayerNorm(d_model)
 
     def forward(
         self,
@@ -368,7 +397,19 @@ class DecoderLayer(nn.Module):
         Returns:
             shape [batch, tgt_len, d_model]
         """
-        raise NotImplementedError
+        # 1. Masked Self-Attention Sublayer
+        self_attn_output = self.self_attn(query=x, key=x, value=x, mask=tgt_mask)
+        x = self.norm1(x + self.dropout1(self_attn_output))  # Add & Norm
+
+        # 2. Cross-Attention Sublayer
+        cross_attn_output = self.cross_attn(query=x, key=memory, value=memory, mask=src_mask)
+        x = self.norm2(x + self.dropout2(cross_attn_output))  # Add & Norm
+
+        # 3. Feed-Forward Sublayer
+        ffn_output = self.ffn(x)
+        x = self.norm3(x + self.dropout3(ffn_output))  # Add & Norm
+
+        return x
 
 
 # ══════════════════════════════════════════════════════════════════════

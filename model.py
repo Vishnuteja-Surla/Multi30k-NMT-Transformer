@@ -538,8 +538,8 @@ class Transformer(nn.Module):
         self.d_model = d_model
 
         # 2. Instantiate Architecture
-        self.src_embedding = nn.Embedding(src_vocab_size, d_model)
-        self.tgt_embedding = nn.Embedding(tgt_vocab_size, d_model)
+        self.src_embedding = nn.Embedding(src_vocab_size, d_model, padding_idx=PAD_IDX)
+        self.tgt_embedding = nn.Embedding(tgt_vocab_size, d_model, padding_idx=PAD_IDX)
         self.positional_encoding = PositionalEncoding(d_model, dropout)
 
         encoder_layer = EncoderLayer(d_model, num_heads, d_ff, dropout)

@@ -486,8 +486,8 @@ class Transformer(nn.Module):
 
     def __init__(
         self,
-        src_vocab_size: int,
-        tgt_vocab_size: int,
+        src_vocab_size: int = 10000,
+        tgt_vocab_size: int = 10000,
         d_model:   int   = 512,
         N:         int   = 6,
         num_heads: int   = 8,
@@ -496,11 +496,59 @@ class Transformer(nn.Module):
         checkpoint_path: str = None,
     ) -> None:
         super().__init__()
-        # TODO: Instantiate 
-        # init should also load the model weights if checkpoint path provided, download the .pth file like this
+        
+        # 1. Load Vocabularies
+        self.src_stoi = {}
+        self.tgt_stoi = {}
+        self.src_itos = {}
+        self.tgt_itos = {}
+
+        if os.path.exists("vocab.json"):
+            with open("vocab.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+                self.src_stoi = data["src_stoi"]
+                self.tgt_stoi = data["tgt_stoi"]
+                self.src_itos = {int(k): v for k, v in data["src_itos"].items()}
+                self.tgt_itos = {int(k): v for k, v in data["tgt_itos"].items()}
+
+                src_vocab_size = len(self.src_stoi)
+                tgt_vocab_size = len(self.tgt_stoi)
+
+        self.d_model = d_model
+
+        # 2. Instantiate Architecture
+        self.src_embedding = nn.Embedding(src_vocab_size, d_model)
+        self.tgt_embedding = nn.Embedding(tgt_vocab_size, d_model)
+        self.positional_encoding = PositionalEncoding(d_model, dropout)
+
+        encoder_layer = EncoderLayer(d_model, num_heads, d_ff, dropout)
+        self.encoder = Encoder(encoder_layer, N)
+
+        decoder_layer = DecoderLayer(d_model, num_heads, d_ff, dropout)
+        self.decoder = Decoder(decoder_layer, N)
+
+        self.generator = nn.Linear(d_model, tgt_vocab_size)
+
+        # 3. Load Spacy Tokenizers
+        try:
+            self.spacy_de = spacy.load("de_core_news_sm")
+        except OSError:
+            spacy.cli.download("de_core_news_sm")
+            self.spacy_de = spacy.load("de_core_news_sm")
+
+        # 4. Load Pre-trained Checkpoint (if provided)
         if checkpoint_path is not None:
-            gdown.download(id="<.pth drive id>", output=checkpoint_path, quiet=False)
-        raise NotImplementedError
+            if not os.path.exists(checkpoint_path):
+                file_id = "<.pth drive id>"
+                gdown.download(id=file_id, output=checkpoint_path, quiet=False)
+
+            state_dict = torch.load(checkpoint_path, map_location='cpu')
+
+            if 'model_state_dict' in state_dict:
+                self.load_state_dict(state_dict['model_state_dict'])
+            else:
+                self.load_state_dict(state_dict)
+        
 
     # ── AUTOGRADER HOOKS ── keep these signatures exactly ─────────────
 
@@ -519,8 +567,10 @@ class Transformer(nn.Module):
         Returns:
             memory : Encoder output, shape [batch, src_len, d_model]
         """
-    
-        raise NotImplementedError
+        x = self.src_embedding(src) * math.sqrt(self.d_model)
+        x = self.positional_encoding(x)
+        memory = self.encoder(x, src_mask)
+        return memory
 
     def decode(
         self,
@@ -541,7 +591,11 @@ class Transformer(nn.Module):
         Returns:
             logits : shape [batch, tgt_len, tgt_vocab_size]
         """
-        raise NotImplementedError
+        x = self.tgt_embedding(tgt) * math.sqrt(self.d_model)
+        x = self.positional_encoding(x)
+        x = self.decoder(x, memory, src_mask, tgt_mask)        
+        logits = self.generator(x)
+        return logits
 
     def forward(
         self,
@@ -562,10 +616,12 @@ class Transformer(nn.Module):
         Returns:
             logits : shape [batch, tgt_len, tgt_vocab_size]
         """
-        raise NotImplementedError
+        memory = self.encode(src, src_mask)
+        logits = self.decode(memory, src_mask, tgt, tgt_mask)
+        return logits
 
 
-    def infer(self, src_sentence: str) -> str:
+    def infer(self, src_sentence: str, max_len: int = 100) -> str:
         """
         Translates a German sentence to English using greedy autoregressive decoding.
         
@@ -576,4 +632,39 @@ class Transformer(nn.Module):
         Returns:
             The fully translated English string, detokenized and clean.
         """
-        raise NotImplementedError
+        self.eval()
+        device = next(self.parameters()).device
+
+        # 1. Pre-processing
+        tokens = [tok.text.lower() for tok in self.spacy_de(src_sentence)]
+        src_indices = [2] + [self.src_stoi.get(tok, 0) for tok in tokens] + [3]
+        src_tensor = torch.tensor(src_indices, dtype=torch.long, device=device).unsqueeze(0)  # [1, src_len]
+
+        # 2. Encoding
+        src_mask = make_src_mask(src_tensor, pad_idx=1).to(device)  # [1, 1, 1, src_len]
+        with torch.no_grad():
+            memory = self.encode(src_tensor, src_mask)
+
+        # 3. Autoregressive Decoding
+        tgt_indices = [2]  # <sos>
+
+        for _ in range(max_len):
+            tgt_tensor = torch.tensor(tgt_indices, dtype=torch.long, device=device).unsqueeze(0)  # [1, tgt_len]
+            tgt_mask = make_tgt_mask(tgt_tensor, pad_idx=1).to(device)  # [1, 1, tgt_len, tgt_len]
+
+            with torch.no_grad():
+                logits = self.decode(memory, src_mask, tgt_tensor, tgt_mask)  # [1, tgt_len, vocab_size]
+                next_token = logits[:, -1, :].argmax(dim=-1).item()  # Greedy decoding
+
+            tgt_indices.append(next_token)
+
+            if next_token == 3:  # <eos>
+                break
+
+        translated_tokens = []
+        for idx in tgt_indices:  # Skip <sos>
+            if idx in [2,3]:  # <eos>
+                continue
+            translated_tokens.append(self.tgt_itos.get(idx, "<unk>"))
+
+        return " ".join(translated_tokens)

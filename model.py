@@ -33,6 +33,10 @@ import spacy
 #    independently of MultiHeadAttention.
 # ══════════════════════════════════════════════════════════════════════
 
+PAD_IDX = 1
+SOS_IDX = 2
+EOS_IDX = 3
+
 def scaled_dot_product_attention(
     Q: torch.Tensor,
     K: torch.Tensor,
@@ -206,8 +210,8 @@ class MultiHeadAttention(nn.Module):
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
 
         # 4. Final linear projection
-        attn_output = self.dropout(attn_output)     # Optional Dropout on attention output
         output = self.W_o(attn_output)
+        output = self.dropout(output)
 
         return output
 
@@ -312,6 +316,8 @@ class EncoderLayer(nn.Module):
 
     def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1) -> None:
         super().__init__()
+
+        self.d_model = d_model
         
         # 1. Self-Attention Sublayer
         self.self_attn = MultiHeadAttention(d_model, num_heads, dropout)
@@ -364,6 +370,8 @@ class DecoderLayer(nn.Module):
 
     def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1) -> None:
         super().__init__()
+
+        self.d_model = d_model
         
         # 1. Masked Self-Attention Sublayer
         self.self_attn = MultiHeadAttention(d_model, num_heads, dropout)
@@ -422,7 +430,7 @@ class Encoder(nn.Module):
     def __init__(self, layer: EncoderLayer, N: int) -> None:
         super().__init__()
         self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(N)])
-        self.norm = nn.LayerNorm(layer.self_attn.d_model)
+        self.norm = nn.LayerNorm(layer.d_model)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
@@ -443,7 +451,7 @@ class Decoder(nn.Module):
     def __init__(self, layer: DecoderLayer, N: int) -> None:
         super().__init__()
         self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(N)])
-        self.norm = nn.LayerNorm(layer.self_attn.d_model)
+        self.norm = nn.LayerNorm(layer.d_model)
 
     def forward(
         self,
@@ -510,9 +518,13 @@ class Transformer(nn.Module):
                 self.tgt_stoi = data["tgt_stoi"]
                 self.src_itos = {int(k): v for k, v in data["src_itos"].items()}
                 self.tgt_itos = {int(k): v for k, v in data["tgt_itos"].items()}
+                self.src_vocab = data.get("src_vocab", list(self.src_stoi.keys()))
+                self.tgt_vocab = data.get("tgt_vocab", list(self.tgt_stoi.keys()))
 
                 src_vocab_size = len(self.src_stoi)
                 tgt_vocab_size = len(self.tgt_stoi)
+        else:
+            print("[WARNING] vocab.json not found. Using default vocab sizes.")
 
         self.d_model = d_model
 
@@ -536,18 +548,37 @@ class Transformer(nn.Module):
             spacy.cli.download("de_core_news_sm")
             self.spacy_de = spacy.load("de_core_news_sm")
 
-        # 4. Load Pre-trained Checkpoint (if provided)
-        if checkpoint_path is not None:
-            if not os.path.exists(checkpoint_path):
-                file_id = "<.pth drive id>"
-                gdown.download(id=file_id, output=checkpoint_path, quiet=False)
+        # 4. Load Pre-trained Checkpoint
+        if checkpoint_path is None:
+            FILE_ID = "<FILE_ID>"
+            CHECKPOINT_PATH = "transformer_checkpoint.pt"
 
-            state_dict = torch.load(checkpoint_path, map_location='cpu')
+            if not os.path.exists(CHECKPOINT_PATH):
+                print(f"[AUTOGRADER MODE] Downloading pre-trained checkpoint from Google Drive...")
+                gdown.download(id=FILE_ID, output=CHECKPOINT_PATH, quiet=False)
 
-            if 'model_state_dict' in state_dict:
-                self.load_state_dict(state_dict['model_state_dict'])
+            if os.path.exists(CHECKPOINT_PATH):
+                print(f"Loading pre-trained checkpoint from {CHECKPOINT_PATH}...")
+                state_dict = torch.load(CHECKPOINT_PATH, map_location='cpu', weights_only=True)
+
+                if 'model_state_dict' in state_dict:
+                    self.load_state_dict(state_dict['model_state_dict'])
+                else:
+                    self.load_state_dict(state_dict)
+            
+            print("Model initialized with pre-trained weights.")
+
+        elif checkpoint_path != "SKIP":
+            if os.path.exists(checkpoint_path):
+                print(f"Loading pre-trained checkpoint from {checkpoint_path}...")
+                state_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+
+                if 'model_state_dict' in state_dict:
+                    self.load_state_dict(state_dict['model_state_dict'])
+                else:
+                    self.load_state_dict(state_dict)
             else:
-                self.load_state_dict(state_dict)
+                print(f"[WARNING] Checkpoint path {checkpoint_path} does not exist. Initializing with random weights.")
         
 
     # ── AUTOGRADER HOOKS ── keep these signatures exactly ─────────────
@@ -636,21 +667,21 @@ class Transformer(nn.Module):
         device = next(self.parameters()).device
 
         # 1. Pre-processing
-        tokens = [tok.text.lower() for tok in self.spacy_de(src_sentence)]
-        src_indices = [2] + [self.src_stoi.get(tok, 0) for tok in tokens] + [3]
+        tokens = [tok.text.lower() for tok in self.spacy_de.tokenizer(src_sentence)]
+        src_indices = [SOS_IDX] + [self.src_stoi.get(tok, 0) for tok in tokens] + [EOS_IDX]
         src_tensor = torch.tensor(src_indices, dtype=torch.long, device=device).unsqueeze(0)  # [1, src_len]
 
         # 2. Encoding
-        src_mask = make_src_mask(src_tensor, pad_idx=1).to(device)  # [1, 1, 1, src_len]
+        src_mask = make_src_mask(src_tensor, pad_idx=PAD_IDX).to(device)  # [1, 1, 1, src_len]
         with torch.no_grad():
             memory = self.encode(src_tensor, src_mask)
 
         # 3. Autoregressive Decoding
-        tgt_indices = [2]  # <sos>
+        tgt_indices = [SOS_IDX]  # <sos>
 
         for _ in range(max_len):
             tgt_tensor = torch.tensor(tgt_indices, dtype=torch.long, device=device).unsqueeze(0)  # [1, tgt_len]
-            tgt_mask = make_tgt_mask(tgt_tensor, pad_idx=1).to(device)  # [1, 1, tgt_len, tgt_len]
+            tgt_mask = make_tgt_mask(tgt_tensor, pad_idx=PAD_IDX).to(device)  # [1, 1, tgt_len, tgt_len]
 
             with torch.no_grad():
                 logits = self.decode(memory, src_mask, tgt_tensor, tgt_mask)  # [1, tgt_len, vocab_size]
@@ -658,12 +689,12 @@ class Transformer(nn.Module):
 
             tgt_indices.append(next_token)
 
-            if next_token == 3:  # <eos>
+            if next_token == EOS_IDX:  # <eos>
                 break
 
         translated_tokens = []
         for idx in tgt_indices:  # Skip <sos>
-            if idx in [2,3]:  # <eos>
+            if idx in [SOS_IDX, EOS_IDX]:  # <eos>
                 continue
             translated_tokens.append(self.tgt_itos.get(idx, "<unk>"))
 

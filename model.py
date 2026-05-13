@@ -511,6 +511,7 @@ class Transformer(nn.Module):
         self.src_itos = {}
         self.tgt_itos = {}
         checkpoint = None
+        self.dropout_rate = dropout
 
         if checkpoint_path is None:
             GDRIVE_FILE_ID = "<YOUR_GDRIVE_FILE_ID>"

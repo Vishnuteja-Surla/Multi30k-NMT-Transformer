@@ -23,6 +23,13 @@ from typing import Optional
 
 from model import Transformer, make_src_mask, make_tgt_mask
 from dataset import Multi30kDataset, PAD_IDX, SOS_IDX, EOS_IDX
+from lr_scheduler import NoamScheduler
+from tqdm import tqdm
+import wandb
+
+import os
+import math
+import time
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -115,7 +122,97 @@ def run_epoch(
         avg_loss : Average loss over the epoch (float).
 
     """
-    raise NotImplementedError
+    # 1. Set the model to correct mode
+    if is_train:
+        model.train()
+    else:
+        model.eval()
+
+    total_loss = 0.0
+    total_tokens = 0
+
+    batches_per_epoch = len(data_iter)
+
+    # Setup tqdm bars
+    mode_str = "Train" if is_train else "Val"
+    pbar = tqdm(data_iter, desc=f"Epoch {epoch_num} [{mode_str}]", leave=False)
+
+    for step, (src, tgt) in enumerate(pbar):
+
+        # 2. Move tensors to the correct device
+        src = src.to(device)
+        tgt = tgt.to(device)
+
+        # 3. Slice the Target tensors for teacher forcing
+        tgt_input = tgt[:, :-1]  # Input to the model (without <eos>)
+        tgt_y = tgt[:, 1:]       # Target for loss (without <sos>)
+
+        # 4. Create source and target masks
+        src_mask = make_src_mask(src, pad_idx=PAD_IDX).to(device)
+        tgt_mask = make_tgt_mask(tgt_input, pad_idx=PAD_IDX).to(device)
+
+        # 5. Forward Pass
+        logits = model(src, tgt_input, src_mask, tgt_mask)
+
+        # 6. Compute Loss
+        loss = loss_fn(
+            logits.contiguous().view(-1, logits.size(-1)), 
+            tgt_y.contiguous().view(-1)
+        )
+
+        # 7. Backward Pass and Optimizer Step (if training)
+        if is_train:
+            optimizer.zero_grad()
+            loss.backward()
+
+            global_step = (epoch_num * batches_per_epoch) + step
+
+            log_metrics = {
+                "train/batch_loss": loss.item(),
+                "train/learning_rate": optimizer.param_groups[0]['lr'],
+                "global_step": global_step
+            }
+
+            with torch.no_grad():
+                probs = F.softmax(logits.contiguous().view(-1, logits.size(-1)), dim=-1)
+                target_probs = probs.gather(dim=1, index=tgt_y.contiguous().view(-1).unsqueeze(-1)).squeeze(-1)
+                valid_probs = target_probs[tgt_y.contiguous().view(-1) != PAD_IDX]
+                if valid_probs.numel() > 0:
+                    log_metrics["train/prediction_confidence"] = valid_probs.mean().item()
+
+            if global_step < 1000:
+                try:
+                    q_grad = model.encoder.layers[0].self_attn.W_q.weight.grad
+                    k_grad = model.encoder.layers[0].self_attn.W_k.weight.grad
+
+                    if q_grad is not None and k_grad is not None:
+                        log_metrics["gradients/W_q_norm"] = q_grad.norm().item()
+                        log_metrics["gradients/W_k_norm"] = k_grad.norm().item()
+                except AttributeError:
+                    pass
+
+            wandb.log(log_metrics)
+
+            optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
+
+        # 8. Accumulate metrics
+        non_pad_tokens = (tgt_y != PAD_IDX).sum().item()
+        total_loss += loss.item() * non_pad_tokens
+        total_tokens += non_pad_tokens
+
+        pbar.set_postfix({"Batch Loss": loss.item(), "LR": optimizer.param_groups[0]['lr']})
+
+    # 9. Epoch Level Logging
+    avg_loss = total_loss / total_tokens if total_tokens > 0 else 0.0
+    if is_train:
+        wandb.log({f"train/epoch_loss": avg_loss, "epoch": epoch_num})
+    else:
+        wandb.log({f"val/epoch_loss": avg_loss, "epoch": epoch_num})
+
+    return avg_loss
+
 
 
 # ══════════════════════════════════════════════════════════════════════

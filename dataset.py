@@ -3,7 +3,6 @@ from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from typing import List, Tuple, Dict
 import warnings
-import json
 
 import spacy
 from datasets import load_dataset
@@ -179,28 +178,6 @@ class Multi30kDataset(Dataset):
         self.src_vocab = src_vocab
         self.tgt_vocab = tgt_vocab
         print(f"[dataset] Vocabulary injected. DE: {len(self.src_vocab)} | EN: {len(self.tgt_vocab)}")
-
-    def save_vocab(self, filepath: str = "vocab.json") -> None:
-        """
-        Exports the vocabulary dictionaries to disk so the Transformer
-        can load them independently during inference.
-        """
-        if not self.src_stoi or not self.tgt_stoi:
-            raise RuntimeError("Vocabulary is empty. Cannot save.")
-
-        vocab_data = {
-            "src_stoi": self.src_stoi,
-            "tgt_stoi": self.tgt_stoi,
-            "src_itos": {str(k): v for k, v in self.src_itos.items()},
-            "tgt_itos": {str(k): v for k, v in self.tgt_itos.items()},
-            "src_vocab": self.src_vocab,
-            "tgt_vocab": self.tgt_vocab
-        }
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(vocab_data, f, ensure_ascii=False, indent=2)
-            
-        print(f"[dataset] Vocabulary successfully saved to {filepath}")
 
     # ══════════════════════════════════════════════════════════════════════
     # PyTorch Dataset Interface & DataLoader Helpers

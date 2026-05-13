@@ -505,26 +505,35 @@ class Transformer(nn.Module):
     ) -> None:
         super().__init__()
         
-        # 1. Load Vocabularies
+        # 1. Load Vocabularies and Weights
         self.src_stoi = {}
         self.tgt_stoi = {}
         self.src_itos = {}
         self.tgt_itos = {}
+        checkpoint = None
 
-        if os.path.exists("vocab.json"):
-            with open("vocab.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
-                self.src_stoi = data["src_stoi"]
-                self.tgt_stoi = data["tgt_stoi"]
-                self.src_itos = {int(k): v for k, v in data["src_itos"].items()}
-                self.tgt_itos = {int(k): v for k, v in data["tgt_itos"].items()}
-                self.src_vocab = data.get("src_vocab", list(self.src_stoi.keys()))
-                self.tgt_vocab = data.get("tgt_vocab", list(self.tgt_stoi.keys()))
+        if checkpoint_path is None:
+            GDRIVE_FILE_ID = "<YOUR_GDRIVE_FILE_ID>"
+            DEFAULT_PATH = "best_model.pth"
+            if not os.path.exists(DEFAULT_PATH):
+                gdown.download(id=GDRIVE_FILE_ID, output=DEFAULT_PATH, quiet=False)
+            checkpoint_path = DEFAULT_PATH
 
+        if checkpoint_path != "SKIP" and os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+            # Extract packed vocabularies
+            if 'src_stoi' in checkpoint and 'tgt_itos' in checkpoint:
+                self.src_stoi = checkpoint['src_stoi']
+                self.tgt_stoi = checkpoint.get('tgt_stoi', {})
+                self.src_itos = checkpoint.get('src_itos', {})
+                self.tgt_itos = checkpoint.get('tgt_itos', {})
+                self.src_vocab = checkpoint.get("src_vocab", list(self.src_stoi.keys()))
+                self.tgt_vocab = checkpoint.get("tgt_vocab", list(self.tgt_stoi.keys()))
+                
+                # Override default sizes with exact sizes from the checkpoint
                 src_vocab_size = len(self.src_stoi)
                 tgt_vocab_size = len(self.tgt_stoi)
-        else:
-            print("[WARNING] vocab.json not found. Using default vocab sizes.")
 
         self.d_model = d_model
 
@@ -541,44 +550,33 @@ class Transformer(nn.Module):
 
         self.generator = nn.Linear(d_model, tgt_vocab_size)
 
+        if checkpoint is not None:
+            if 'model_state_dict' in checkpoint:
+                self.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                self.load_state_dict(checkpoint)
+
         # 3. Load Spacy Tokenizers
         try:
             self.spacy_de = spacy.load("de_core_news_sm")
         except OSError:
             spacy.cli.download("de_core_news_sm")
-            self.spacy_de = spacy.load("de_core_news_sm")
+            try:
+                import de_core_news_sm
+                self.spacy_de = de_core_news_sm.load()
+            except ImportError:
+                # Final fallback for environments where pip install doesn't
+                # refresh sys.path in the current session
+                import subprocess, sys
+                subprocess.run(
+                    [sys.executable, "-m", "spacy", "download", "de_core_news_sm"],
+                    check=True
+                )
+                import importlib
+                import de_core_news_sm
+                importlib.reload(de_core_news_sm)
+                self.spacy_de = de_core_news_sm.load()
 
-        # 4. Load Pre-trained Checkpoint
-        if checkpoint_path is None:
-            FILE_ID = "<FILE_ID>"
-            CHECKPOINT_PATH = "transformer_checkpoint.pt"
-
-            if not os.path.exists(CHECKPOINT_PATH):
-                print(f"[AUTOGRADER MODE] Downloading pre-trained checkpoint from Google Drive...")
-                gdown.download(id=FILE_ID, output=CHECKPOINT_PATH, quiet=False)
-
-            if os.path.exists(CHECKPOINT_PATH):
-                print(f"Loading pre-trained checkpoint from {CHECKPOINT_PATH}...")
-                state_dict = torch.load(CHECKPOINT_PATH, map_location='cpu', weights_only=True)
-
-                if 'model_state_dict' in state_dict:
-                    self.load_state_dict(state_dict['model_state_dict'])
-                else:
-                    self.load_state_dict(state_dict)
-            
-            print("Model initialized with pre-trained weights.")
-
-        elif checkpoint_path != "SKIP":
-            if os.path.exists(checkpoint_path):
-                print(f"Loading pre-trained checkpoint from {checkpoint_path}...")
-                state_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
-
-                if 'model_state_dict' in state_dict:
-                    self.load_state_dict(state_dict['model_state_dict'])
-                else:
-                    self.load_state_dict(state_dict)
-            else:
-                print(f"[WARNING] Checkpoint path {checkpoint_path} does not exist. Initializing with random weights.")
         
 
     # ── AUTOGRADER HOOKS ── keep these signatures exactly ─────────────

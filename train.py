@@ -18,9 +18,11 @@ AUTOGRADER CONTRACT (DO NOT MODIFY SIGNATURES):
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 from typing import Optional
 
 from model import Transformer, make_src_mask, make_tgt_mask
+from dataset import Multi30kDataset, PAD_IDX, SOS_IDX, EOS_IDX
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -42,7 +44,12 @@ class LabelSmoothingLoss(nn.Module):
 
     def __init__(self, vocab_size: int, pad_idx: int, smoothing: float = 0.1) -> None:
         super().__init__()
-        raise NotImplementedError
+        self.vocab_size = vocab_size
+        self.pad_idx = pad_idx
+        self.smoothing = smoothing
+        self.confidence = 1.0 - smoothing  # Probability for the correct class
+        self.criterion = nn.KLDivLoss(reduction="batchmean")  # KL divergence loss
+
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """
@@ -53,8 +60,28 @@ class LabelSmoothingLoss(nn.Module):
         Returns:
             Scalar loss value.
         """
-        # TODO: Task 3.1
-        raise NotImplementedError
+        # 1. Covert raw logits to log-probabilities
+        log_probs = F.log_softmax(logits, dim=-1)
+
+        # 2. Create smoothed target distributions
+        true_dist = torch.zeros_like(log_probs)
+
+        # 3. Fill in the smoothed probabilities
+        true_dist.fill_(self.smoothing / (self.vocab_size - 2))
+
+        # 4. Scatter the high confidence to the correct class
+        true_dist.scatter_(1, target.unsqueeze(1), self.confidence)
+
+        # 5. Zero out the probabilities for the padding index
+        true_dist[:, self.pad_idx] = 0.0
+
+        # 6. Fill all the positions where target itself is padding with zero probability
+        pad_mask = (target == self.pad_idx).unsqueeze(1)
+        true_dist.masked_fill_(pad_mask, 0.0)
+
+        # 7. Compute KL divergence loss between log_probs and true_dist
+        return self.criterion(log_probs, true_dist)
+
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -17,7 +17,6 @@ AUTOGRADER CONTRACT (DO NOT MODIFY SIGNATURES):
 import math
 import copy
 import os
-import json
 import gdown
 from typing import Optional, Tuple
 
@@ -510,6 +509,8 @@ class Transformer(nn.Module):
         self.tgt_stoi = {}
         self.src_itos = {}
         self.tgt_itos = {}
+        self.src_vocab = []
+        self.tgt_vocab = []
         checkpoint = None
         self.dropout_rate = dropout
 

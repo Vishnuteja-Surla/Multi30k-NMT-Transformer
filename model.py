@@ -203,7 +203,16 @@ class MultiHeadAttention(nn.Module):
             elif mask.dim() == 4:
                 attn_mask = mask  # already in [batch, num_heads, seq_q, seq_k]
 
-        attn_output, attn_weights = scaled_dot_product_attention(Q, K, V, attn_mask)
+        if self.use_scaling:
+            attn_output, attn_weights = scaled_dot_product_attention(Q, K, V, attn_mask)
+        else:
+            scores = torch.matmul(Q, K.transpose(-2, -1))
+            if attn_mask is not None:
+                scores = scores.masked_fill(attn_mask, float('-inf'))
+            attn_weights = F.softmax(scores, dim=-1)
+            attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
+            attn_output  = torch.matmul(attn_weights, V)
+            
         self.attn_weights = attn_weights.detach()
 
         # 3. Concatenate heads and final linear

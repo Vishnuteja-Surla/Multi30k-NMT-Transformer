@@ -520,11 +520,11 @@ class Transformer(nn.Module):
         self,
         src_vocab_size: int = 10000,
         tgt_vocab_size: int = 10000,
-        d_model:   int   = 256,
-        N:         int   = 3,
+        d_model:   int   = 512,
+        N:         int   = 6,
         num_heads: int   = 8,
-        d_ff:      int   = 512,
-        dropout:   float = 0.1,
+        d_ff:      int   = 2048,
+        dropout:   float = 0.3,
         use_scaling: bool = True,
         positional_encoding: str = "sinusoidal",
         checkpoint_path: str = None,
@@ -542,7 +542,7 @@ class Transformer(nn.Module):
         self.dropout_rate = dropout
 
         if checkpoint_path is None:
-            GDRIVE_FILE_ID = "17pe3K34gAmjtqWSMCNspKGn6Kzy11A0B"
+            GDRIVE_FILE_ID = "1aJnNjWv4NEsqQMkmT4OYj0X1Tkk9ylVh"
             checkpoint_path = "best_model.pth"
             if not os.path.exists(checkpoint_path):
                 if GDRIVE_FILE_ID == "<YOUR_GDRIVE_FILE_ID>":

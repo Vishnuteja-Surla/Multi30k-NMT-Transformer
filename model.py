@@ -212,7 +212,7 @@ class MultiHeadAttention(nn.Module):
             attn_weights = F.softmax(scores, dim=-1)
             attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
             attn_output  = torch.matmul(attn_weights, V)
-            
+
         self.attn_weights = attn_weights.detach()
 
         # 3. Concatenate heads and final linear
@@ -539,7 +539,7 @@ class Transformer(nn.Module):
         self.dropout_rate = dropout
 
         if checkpoint_path is None:
-            GDRIVE_FILE_ID = "<YOUR_GDRIVE_FILE_ID>"
+            GDRIVE_FILE_ID = "1WJmpF5T2-jLPIMHW-ogOICcS9AZb8XDY"
             checkpoint_path = "best_model.pth"
             if not os.path.exists(checkpoint_path):
                 if GDRIVE_FILE_ID == "<YOUR_GDRIVE_FILE_ID>":

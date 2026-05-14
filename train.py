@@ -21,7 +21,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from typing import Optional
-import evaluate     
+from bleu import list_bleu
 
 from model import Transformer, make_src_mask, make_tgt_mask
 from dataset import Multi30kDataset, PAD_IDX, SOS_IDX, EOS_IDX
@@ -123,12 +123,12 @@ def run_epoch(
     else:
         model.eval()
 
-    total_loss   = 0.0
+    total_loss = 0.0
     total_tokens = 0
 
     batches_per_epoch = len(data_iter)
-    mode_str          = "Train" if is_train else "Val"
-    pbar              = tqdm(data_iter, desc=f"Epoch {epoch_num} [{mode_str}]", leave=False)
+    mode_str = "Train" if is_train else "Val"
+    pbar = tqdm(data_iter, desc=f"Epoch {epoch_num} [{mode_str}]", leave=False)
 
     for step, (src, tgt) in enumerate(pbar):
 
@@ -137,18 +137,18 @@ def run_epoch(
 
         # Teacher-forcing slices
         tgt_input = tgt[:, :-1]   # feed: <sos> … token_{n-1}
-        tgt_y     = tgt[:, 1:]    # gold: token_1 … <eos>
+        tgt_y = tgt[:, 1:]    # gold: token_1 … <eos>
 
         src_mask = make_src_mask(src, pad_idx=PAD_IDX).to(device)
         tgt_mask = make_tgt_mask(tgt_input, pad_idx=PAD_IDX).to(device)
 
         # ── Forward ────────────────────────────────────────────────
-        logits = model(src, tgt_input, src_mask, tgt_mask)
-
-        loss = loss_fn(
-            logits.contiguous().view(-1, logits.size(-1)),
-            tgt_y.contiguous().view(-1),
-        )
+        with torch.set_grad_enabled(is_train):
+            logits = model(src, tgt_input, src_mask, tgt_mask)
+            loss = loss_fn(
+                logits.contiguous().view(-1, logits.size(-1)),
+                tgt_y.contiguous().view(-1),
+            )
 
         # ── Backward (train only) ──────────────────────────────────
         if is_train:
@@ -158,9 +158,9 @@ def run_epoch(
             global_step = epoch_num * batches_per_epoch + step
 
             log_metrics = {
-                "train/batch_loss":   loss.item(),
+                "train/batch_loss": loss.item(),
                 "train/learning_rate": optimizer.param_groups[0]["lr"],
-                "global_step":        global_step,
+                "global_step": global_step,
             }
 
             # Prediction-confidence logging (Section 2.5)
@@ -185,7 +185,8 @@ def run_epoch(
                 except AttributeError:
                     pass
 
-            wandb.log(log_metrics)
+            if wandb.run is not None:
+                wandb.log(log_metrics)
 
             optimizer.step()
             if scheduler is not None:
@@ -193,7 +194,7 @@ def run_epoch(
 
         # ── Accumulate metrics ─────────────────────────────────────
         non_pad_tokens = (tgt_y != PAD_IDX).sum().item()
-        total_loss   += loss.item() * non_pad_tokens
+        total_loss += loss.item() * non_pad_tokens
         total_tokens += non_pad_tokens
 
         postfix = {"Batch Loss": f"{loss.item():.4f}"}
@@ -204,7 +205,8 @@ def run_epoch(
     # ── Epoch-level W&B logging ────────────────────────────────────
     avg_loss = total_loss / total_tokens if total_tokens > 0 else 0.0
     split_key = "train" if is_train else "val"
-    wandb.log({f"{split_key}/epoch_loss": avg_loss, "epoch": epoch_num})
+    if wandb.run is not None:
+        wandb.log({f"{split_key}/epoch_loss": avg_loss, "epoch": epoch_num})
 
     return avg_loss
 
@@ -269,6 +271,18 @@ def greedy_decode(
 #   BLEU EVALUATION
 # ══════════════════════════════════════════════════════════════════════
 
+def get_token(vocab, idx):
+    if hasattr(vocab, 'lookup_token'):
+        return vocab.lookup_token(idx)
+    elif hasattr(vocab, 'itos'):
+        return vocab.itos[idx]
+    elif isinstance(vocab, dict):
+        return vocab.get(idx, "<unk>")
+    elif isinstance(vocab, list):
+        return vocab[idx] if idx < len(vocab) else "<unk>"
+    return "<unk>"
+
+
 def evaluate_bleu(
     model: Transformer,
     test_dataloader: DataLoader,
@@ -295,7 +309,10 @@ def evaluate_bleu(
     hypotheses = []
     references = []
 
-    translation_table = wandb.Table(columns=["Target (Ground Truth)", "Prediction (Model Output)"])
+    translation_table = None
+    if wandb.run is not None:
+        translation_table = wandb.Table(columns=["Target (Ground Truth)", "Prediction (Model Output)"])
+
     log_limit = 10
     log_count = 0
 
@@ -322,7 +339,7 @@ def evaluate_bleu(
                     continue
                 if idx == EOS_IDX:
                     break
-                pred_tokens.append(tgt_vocab.get(idx, "<unk>"))
+                pred_tokens.append(get_token(tgt_vocab, idx))
 
             tgt_tokens = []
             for idx in tgt_seq[0].tolist():
@@ -330,26 +347,24 @@ def evaluate_bleu(
                     continue
                 if idx == EOS_IDX:
                     break
-                tgt_tokens.append(tgt_vocab.get(idx, "<unk>"))
+                tgt_tokens.append(get_token(tgt_vocab, idx))
 
             pred_str = " ".join(pred_tokens)
             tgt_str  = " ".join(tgt_tokens)
 
             hypotheses.append(pred_str)
-            references.append([tgt_str])          # sacrebleu expects list-of-lists
+            references.append(tgt_str)          # sacrebleu expects list-of-lists
 
-            if log_count < log_limit:
+            if translation_table is not None and log_count < log_limit:
                 translation_table.add_data(tgt_str, pred_str)
                 log_count += 1
 
-    if wandb.run is not None:
+    if wandb.run is not None and translation_table is not None:
         wandb.log({"test/sample_translations": translation_table})
 
-
-    bleu_metric = evaluate.load("sacrebleu")
-    results = bleu_metric.compute(predictions=hypotheses, references=references)
-
-    return float(results["score"])
+    score = list_bleu([references], hypotheses) 
+    
+    return float(score)
 
 
 # ══════════════════════════════════════════════════════════════════════

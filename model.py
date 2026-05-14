@@ -147,13 +147,14 @@ class MultiHeadAttention(nn.Module):
         dropout   (float): Dropout probability applied to attention weights.
     """
 
-    def __init__(self, d_model: int, num_heads: int, dropout: float = 0.1) -> None:
+    def __init__(self, d_model: int, num_heads: int, dropout: float = 0.1, use_scaling: bool = True) -> None:
         super().__init__()
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
 
-        self.d_model   = d_model
+        self.d_model = d_model
         self.num_heads = num_heads
-        self.d_k       = d_model // num_heads   # depth per head
+        self.d_k = d_model // num_heads   # depth per head
+        self.use_scaling = use_scaling
 
         self.W_q = nn.Linear(d_model, d_model)
         self.W_k = nn.Linear(d_model, d_model)
@@ -161,7 +162,7 @@ class MultiHeadAttention(nn.Module):
         self.W_o = nn.Linear(d_model, d_model)
 
         self.dropout = nn.Dropout(p=dropout)
-    
+
     def forward(
         self,
         query: torch.Tensor,
@@ -256,6 +257,22 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
+class LearnedPositionalEncoding(nn.Module):
+    """
+    Learned Positional Encoding via nn.Embedding.
+    Drop-in replacement for PositionalEncoding.
+    """
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000) -> None:
+        super().__init__()
+        self.dropout   = nn.Dropout(p=dropout)
+        self.embedding = nn.Embedding(max_len, d_model)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        seq_len = x.size(1)
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(0)  # [1, seq_len]
+        x = x + self.embedding(positions)
+        return self.dropout(x)
+
 # ══════════════════════════════════════════════════════════════════════
 #  FEED-FORWARD NETWORK 
 # ══════════════════════════════════════════════════════════════════════
@@ -274,10 +291,6 @@ class PositionwiseFeedForward(nn.Module):
 
     def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1) -> None:
         super().__init__()
-        # TODO: Task 2.3 — define:
-        #   self.linear1 = nn.Linear(d_model, d_ff)
-        #   self.linear2 = nn.Linear(d_ff, d_model)
-        #   self.dropout = nn.Dropout(p=dropout)
         self.linear1 = nn.Linear(d_model, d_ff)
         self.linear2 = nn.Linear(d_ff, d_model)
         self.dropout = nn.Dropout(p=dropout)
@@ -313,13 +326,13 @@ class EncoderLayer(nn.Module):
         dropout   (float): Dropout probability.
     """
 
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1) -> None:
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1, use_scaling: bool = True) -> None:
         super().__init__()
 
         self.d_model = d_model
         
         # 1. Self-Attention Sublayer
-        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout, use_scaling)
         self.dropout1 = nn.Dropout(p=dropout)
         self.norm1 = nn.LayerNorm(d_model)
 
@@ -367,18 +380,18 @@ class DecoderLayer(nn.Module):
         dropout   (float): Dropout probability.
     """
 
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1) -> None:
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1, use_scaling: bool = True) -> None:
         super().__init__()
 
         self.d_model = d_model
         
         # 1. Masked Self-Attention Sublayer
-        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.self_attn = MultiHeadAttention(d_model, num_heads, dropout, use_scaling)
         self.dropout1 = nn.Dropout(p=dropout)
         self.norm1 = nn.LayerNorm(d_model)
 
         # 2. Cross-Attention Sublayer
-        self.cross_attn = MultiHeadAttention(d_model, num_heads, dropout)
+        self.cross_attn = MultiHeadAttention(d_model, num_heads, dropout, use_scaling)
         self.dropout2 = nn.Dropout(p=dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
@@ -500,6 +513,8 @@ class Transformer(nn.Module):
         num_heads: int   = 8,
         d_ff:      int   = 2048,
         dropout:   float = 0.1,
+        use_scaling: bool = True,
+        positional_encoding: str = "sinusoidal",
         checkpoint_path: str = None,
     ) -> None:
         super().__init__()
@@ -544,13 +559,16 @@ class Transformer(nn.Module):
         # 2. Instantiate Architecture
         self.src_embedding = nn.Embedding(src_vocab_size, d_model, padding_idx=PAD_IDX)
         self.tgt_embedding = nn.Embedding(tgt_vocab_size, d_model, padding_idx=PAD_IDX)
-        self.positional_encoding = PositionalEncoding(d_model, dropout)
+        if positional_encoding == "learned":
+            self.positional_encoding = LearnedPositionalEncoding(d_model, dropout)
+        else:
+            self.positional_encoding = PositionalEncoding(d_model, dropout)
 
-        encoder_layer = EncoderLayer(d_model, num_heads, d_ff, dropout)
-        self.encoder = Encoder(encoder_layer, N)
+        encoder_layer = EncoderLayer(d_model, num_heads, d_ff, dropout, use_scaling)
+        self.encoder  = Encoder(encoder_layer, N)
 
-        decoder_layer = DecoderLayer(d_model, num_heads, d_ff, dropout)
-        self.decoder = Decoder(decoder_layer, N)
+        decoder_layer = DecoderLayer(d_model, num_heads, d_ff, dropout, use_scaling)
+        self.decoder  = Decoder(decoder_layer, N)
 
         self.generator = nn.Linear(d_model, tgt_vocab_size)
 
@@ -651,6 +669,10 @@ class Transformer(nn.Module):
             The fully translated English string, detokenized and clean.
         """
         self.eval()
+        if self.spacy_de is None:
+            raise RuntimeError(
+                "German tokenizer not loaded. Run: python -m spacy download de_core_news_sm"
+            )
         device = next(self.parameters()).device
 
         # 1. Pre-processing

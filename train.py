@@ -30,6 +30,7 @@ from tqdm import tqdm
 import wandb
 import matplotlib.pyplot as plt
 
+import argparse
 
 # ══════════════════════════════════════════════════════════════════════
 #  LABEL SMOOTHING LOSS
@@ -188,6 +189,7 @@ def run_epoch(
             if wandb.run is not None:
                 wandb.log(log_metrics)
 
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             if scheduler is not None:
                 scheduler.step()
@@ -449,7 +451,7 @@ def load_checkpoint(
 #   EXPERIMENT ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════
 
-def run_training_experiment() -> None:
+def run_training_experiment(args) -> None:
     """
     Set up and run the full training experiment.
 
@@ -470,32 +472,29 @@ def run_training_experiment() -> None:
     print(f"Using device: {device}")
 
     experiment_config = {
-        "d_model":              512,
-        "num_heads":            8,
-        "d_ff":                 2048,
-        "N":                    6,
-        "dropout":              0.1,
-        "batch_size":           128,
-        "num_epochs":           10,
-        "warmup_steps":         4000,
-        "label_smoothing":      0.1,
-        "use_noam_scheduler":   True,
-        "use_scaling_factor":   True,
-        "positional_encoding":  "sinusoidal",
+        "d_model": args.d_model,
+        "num_heads": args.num_heads,
+        "d_ff": args.d_ff,
+        "N": args.N,
+        "dropout": args.dropout,
+        "batch_size": args.batch_size,
+        "num_epochs": args.num_epochs,
+        "warmup_steps": args.warmup_steps,
+        "label_smoothing": args.label_smoothing,
+        "use_noam_scheduler": args.use_noam_scheduler,
+        "use_scaling_factor": args.use_scaling,
+        "positional_encoding": args.positional_encoding,
     }
 
     wandb.init(
-        project="DA6401_Assignment_03",
-        name=(
-            f"run_noam_{experiment_config['use_noam_scheduler']}"
-            f"_ls_{experiment_config['label_smoothing']}"
-        ),
+        project=args.wandb_project,
+        name=args.run_name,
         config=experiment_config,
     )
 
     # ── Datasets ──────────────────────────────────────────────────────
     print("Preparing datasets …")
-    train_data = Multi30kDataset(split="train", min_freq=2)
+    train_data = Multi30kDataset(split="train", min_freq=args.min_freq)
     train_data.build_vocab()
     train_data.process_data()
 
@@ -516,13 +515,13 @@ def run_training_experiment() -> None:
     test_data.process_data()
 
     train_loader = train_data.get_dataloader(
-        batch_size=experiment_config["batch_size"], shuffle=True
+        batch_size=args.batch_size, shuffle=True
     )
     val_loader  = val_data.get_dataloader(
-        batch_size=experiment_config["batch_size"], shuffle=False
+        batch_size=args.batch_size, shuffle=False
     )
     test_loader = test_data.get_dataloader(
-        batch_size=experiment_config["batch_size"], shuffle=False
+        batch_size=args.batch_size, shuffle=False
     )
 
     # ── Model ─────────────────────────────────────────────────────────
@@ -530,12 +529,14 @@ def run_training_experiment() -> None:
     model = Transformer(
         src_vocab_size=len(train_data.src_vocab),
         tgt_vocab_size=len(train_data.tgt_vocab),
-        d_model=experiment_config["d_model"],
-        N=experiment_config["N"],
-        num_heads=experiment_config["num_heads"],
-        d_ff=experiment_config["d_ff"],
-        dropout=experiment_config["dropout"],
-        checkpoint_path="SKIP",   # bypass gdown during training
+        d_model=args.d_model,
+        N=args.N,
+        num_heads=args.num_heads,
+        d_ff=args.d_ff,
+        dropout=args.dropout,
+        use_scaling = args.use_scaling,
+        positional_encoding = args.positional_encoding,
+        checkpoint_path="SKIP",
     ).to(device)
 
     # Inject vocab onto model so save_checkpoint can read it without
@@ -548,31 +549,31 @@ def run_training_experiment() -> None:
     model.tgt_vocab = train_data.tgt_vocab
 
     # ── Optimizer & Scheduler ─────────────────────────────────────────
-    base_lr   = 1.0 if experiment_config["use_noam_scheduler"] else 1e-4
+    base_lr = 1.0 if args.use_noam_scheduler else args.fixed_lr
     optimizer = optim.Adam(
         model.parameters(), lr=base_lr, betas=(0.9, 0.98), eps=1e-9
     )
 
     scheduler = None
-    if experiment_config["use_noam_scheduler"]:
+    if args.use_noam_scheduler:
         scheduler = NoamScheduler(
             optimizer,
-            d_model=experiment_config["d_model"],
-            warmup_steps=experiment_config["warmup_steps"],
+            d_model=args.d_model,
+            warmup_steps=args.warmup_steps,
         )
 
     # ── Loss ──────────────────────────────────────────────────────────
     loss_fn = LabelSmoothingLoss(
         vocab_size=len(train_data.tgt_vocab),
         pad_idx=PAD_IDX,
-        smoothing=experiment_config["label_smoothing"],
+        smoothing=args.label_smoothing,
     ).to(device)
 
     # ── Training Loop ─────────────────────────────────────────────────
     best_val_bleu  = 0.0
-    checkpoint_path = "best_model.pth"
+    checkpoint_path = args.checkpoint_path if args.checkpoint_path else "best_model.pth"
 
-    for epoch in range(experiment_config["num_epochs"]):
+    for epoch in range(args.num_epochs):
         print(f"\n--- Epoch {epoch} ---")
 
         train_loss = run_epoch(
@@ -608,13 +609,14 @@ def run_training_experiment() -> None:
 
     test_bleu = evaluate_bleu(model, test_loader, train_data.tgt_itos, device=device)
     print(f"Final Test BLEU: {test_bleu:.2f}")
-    wandb.log({"test/final_bleu": test_bleu})
+    if wandb.run is not None:
+        wandb.log({"test/final_bleu": test_bleu})
 
     # ── Attention Heatmaps (Section 2.3) ──────────────────────────────
     print("Generating attention heatmaps …")
     sample_sentence = "ein kleiner hund rennt über das gras."
-    translation     = model.infer(sample_sentence)
-    print(f"Source:      {sample_sentence}")
+    translation = model.infer(sample_sentence)
+    print(f"Source: {sample_sentence}")
     print(f"Translation: {translation}")
 
     # attn_weights stored by MHA after each forward pass
@@ -622,8 +624,8 @@ def run_training_experiment() -> None:
     attn_weights = attn_weights.squeeze(0).cpu().numpy()   # [num_heads, seq_q, seq_k]
 
     num_heads = attn_weights.shape[0]
-    cols      = 4
-    rows      = (num_heads + cols - 1) // cols
+    cols = 4
+    rows = (num_heads + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows))
 
     for head_idx, ax in enumerate(axes.flatten()):
@@ -637,11 +639,54 @@ def run_training_experiment() -> None:
             ax.axis("off")   # hide unused subplot panels
 
     plt.tight_layout()
-    wandb.log({"attention_maps/encoder_last_layer": wandb.Image(fig)})
+    if wandb.run is not None:
+        wandb.log({"attention_maps/encoder_last_layer": wandb.Image(fig)})
     plt.close(fig)
 
     wandb.finish()
 
 
 if __name__ == "__main__":
-    run_training_experiment()
+    parser = argparse.ArgumentParser(
+        description="Train Transformer for DE→EN (DA6401 A3)"
+    )
+
+    # Architecture
+    parser.add_argument("--d_model",    type=int,   default=512)
+    parser.add_argument("--num_heads",  type=int,   default=8)
+    parser.add_argument("--d_ff",       type=int,   default=2048)
+    parser.add_argument("--N",          type=int,   default=6)
+    parser.add_argument("--dropout",    type=float, default=0.1)
+
+    # Training
+    parser.add_argument("--batch_size",      type=int,   default=128)
+    parser.add_argument("--num_epochs",      type=int,   default=20)
+    parser.add_argument("--warmup_steps",    type=int,   default=4000)
+    parser.add_argument("--label_smoothing", type=float, default=0.1)
+    parser.add_argument("--fixed_lr",        type=float, default=1e-4)
+    parser.add_argument("--min_freq",        type=int,   default=2)
+
+    # Ablation toggles
+    parser.add_argument("--use_noam_scheduler",
+        action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use_scaling",
+        action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--positional_encoding",
+        type=str, default="sinusoidal", choices=["sinusoidal", "learned"])
+
+    # W&B and I/O
+    parser.add_argument("--wandb_project",   type=str, default="DA6401_Assignment_03")
+    parser.add_argument("--run_name",        type=str, default=None)
+    parser.add_argument("--checkpoint_path", type=str, default="best_model.pth")
+
+    args = parser.parse_args()
+
+    # Auto-generate run name if not provided
+    if args.run_name is None:
+        pe   = args.positional_encoding
+        noam = "noam" if args.use_noam_scheduler else f"fixedlr{args.fixed_lr}"
+        sc   = "scaled" if args.use_scaling else "noscale"
+        ls   = f"ls{args.label_smoothing}"
+        args.run_name = f"{pe}_{noam}_{sc}_{ls}_ep{args.num_epochs}"
+
+    run_training_experiment(args)

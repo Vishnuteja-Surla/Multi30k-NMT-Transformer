@@ -542,7 +542,7 @@ class Transformer(nn.Module):
         self.dropout_rate = dropout
 
         if checkpoint_path is None:
-            GDRIVE_FILE_ID = "1ImiojeDOFTWUDJU3uco8P1V6BXW1ufc7"
+            GDRIVE_FILE_ID = "17pe3K34gAmjtqWSMCNspKGn6Kzy11A0B"
             checkpoint_path = "best_model.pth"
             if not os.path.exists(checkpoint_path):
                 if GDRIVE_FILE_ID == "<YOUR_GDRIVE_FILE_ID>":

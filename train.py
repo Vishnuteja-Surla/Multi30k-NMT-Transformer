@@ -223,7 +223,7 @@ def greedy_decode(
     src_mask: torch.Tensor,
     max_len: int,
     start_symbol: int,
-    end_symbol: int,
+    end_symbol: int = 3,
     device: str = "cpu",
 ) -> torch.Tensor:
     """

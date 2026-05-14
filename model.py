@@ -113,7 +113,7 @@ def make_tgt_mask(
         Boolean mask, shape [batch, 1, tgt_len, tgt_len]
         True → position is masked out (PAD or future token)
     """
-    batch, tgt_len = tgt.size()
+    tgt_len = tgt.size(1)
 
     # 1. Create padding mask for target sequence
     pad_mask = (tgt == pad_idx)
@@ -515,12 +515,14 @@ class Transformer(nn.Module):
 
         if checkpoint_path is None:
             GDRIVE_FILE_ID = "<YOUR_GDRIVE_FILE_ID>"
-            DEFAULT_PATH = "best_model.pth"
-            if not os.path.exists(DEFAULT_PATH):
-                gdown.download(id=GDRIVE_FILE_ID, output=DEFAULT_PATH, quiet=False)
-            checkpoint_path = DEFAULT_PATH
+            checkpoint_path = "best_model.pth"
+            if not os.path.exists(checkpoint_path):
+                if GDRIVE_FILE_ID == "<YOUR_GDRIVE_FILE_ID>":
+                    print("WARNING: GDrive ID not set. Skipping download.")
+                else:
+                    gdown.download(id=GDRIVE_FILE_ID, output=checkpoint_path, quiet=False)
 
-        if checkpoint_path != "SKIP" and os.path.exists(checkpoint_path):
+        if checkpoint_path and os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
             # Extract packed vocabularies
@@ -561,23 +563,8 @@ class Transformer(nn.Module):
         try:
             self.spacy_de = spacy.load("de_core_news_sm")
         except OSError:
-            spacy.cli.download("de_core_news_sm")
-            try:
-                import de_core_news_sm
-                self.spacy_de = de_core_news_sm.load()
-            except ImportError:
-                # Final fallback for environments where pip install doesn't
-                # refresh sys.path in the current session
-                import subprocess, sys
-                subprocess.run(
-                    [sys.executable, "-m", "spacy", "download", "de_core_news_sm"],
-                    check=True
-                )
-                import importlib
-                import de_core_news_sm
-                importlib.reload(de_core_news_sm)
-                self.spacy_de = de_core_news_sm.load()
-
+            print("WARNING: de_core_news_sm not found. Inference will fail if not installed.")
+            self.spacy_de = None
         
 
     # ── AUTOGRADER HOOKS ── keep these signatures exactly ─────────────

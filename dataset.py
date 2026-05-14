@@ -7,6 +7,9 @@ import warnings
 import spacy
 from datasets import load_dataset
 
+import subprocess
+import sys
+
 # ══════════════════════════════════════════════════════════════════════
 # GLOBAL CONSTANTS
 # ══════════════════════════════════════════════════════════════════════
@@ -48,11 +51,10 @@ class Multi30kDataset(Dataset):
             self.spacy_de = spacy.load("de_core_news_sm")
             self.spacy_en = spacy.load("en_core_web_sm")
         except OSError as e:
-            raise OSError(
-                "spaCy language models not found. Run:\n"
-                "  python -m spacy download de_core_news_sm\n"
-                "  python -m spacy download en_core_web_sm"
-            ) from e
+            subprocess.check_call([sys.executable, "-m", "spacy", "download", "de_core_news_sm"])
+            self.spacy_de = spacy.load("de_core_news_sm")
+            subprocess.check_call([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
+            self.spacy_en = spacy.load("en_core_web_sm")
 
         # 5. Tokenize all sentences ONCE and cache them in memory.
         print(f"[dataset] Tokenizing {len(self.raw)} pairs with SpaCy in memory...")

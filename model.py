@@ -25,6 +25,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import spacy
 
+import subprocess
+import sys
+
 
 # ══════════════════════════════════════════════════════════════════════
 #   STANDALONE ATTENTION FUNCTION  
@@ -591,8 +594,8 @@ class Transformer(nn.Module):
         try:
             self.spacy_de = spacy.load("de_core_news_sm")
         except OSError:
-            print("WARNING: de_core_news_sm not found. Inference will fail if not installed.")
-            self.spacy_de = None
+            subprocess.check_call([sys.executable, "-m", "spacy", "download", "de_core_news_sm"])
+            self.spacy_de = spacy.load("de_core_news_sm")
         
 
     # ── AUTOGRADER HOOKS ── keep these signatures exactly ─────────────

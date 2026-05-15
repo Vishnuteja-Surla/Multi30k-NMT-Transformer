@@ -524,7 +524,7 @@ class Transformer(nn.Module):
         N:         int   = 6,
         num_heads: int   = 8,
         d_ff:      int   = 2048,
-        dropout:   float = 0.3,
+        dropout:   float = 0.1,
         use_scaling: bool = True,
         positional_encoding: str = "sinusoidal",
         checkpoint_path: str = None,
